@@ -19,6 +19,7 @@ pipeline {
           println("requesting oauth token");
           def getTokenResp = httpRequest acceptType: 'APPLICATION_JSON',
             authentication: "${env.CPIOAuthCredentials}",
+            println("{env.CPIOAuthCredentials}");
             contentType: 'APPLICATION_JSON',
             httpMode: 'POST',
             responseHandle: 'LEAVE_OPEN',
