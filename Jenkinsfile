@@ -55,7 +55,7 @@ pipeline {
             contentType: 'APPLICATION_JSON',
             httpMode: 'POST',
             responseHandle: 'LEAVE_OPEN',
-            timeout: 30,
+            timeout: 120,
             url: 'https://' + env.CPIOAuthHost + '/oauth/token?grant_type=client_credentials';
           def jsonObjToken = readJSON text: getTokenResp.content
           def token = "Bearer " + jsonObjToken.access_token
@@ -68,7 +68,7 @@ pipeline {
             httpMode: 'GET',
             responseHandle: 'LEAVE_OPEN',
             validResponseCodes: '200,201,202,404',
-            timeout: 30,
+            timeout: 120,
             url: 'https://' + env.CPIHost + '/api/v1/IntegrationDesigntimeArtifacts(Id=\'' + env.IntegrationFlowID + '\',Version=\'active\')';
 
           def filecontent = readFile encoding: 'Base64', file: filePath;
@@ -123,7 +123,7 @@ pipeline {
                 [maskValue: false, name: 'Authorization', value: token]
               ],
               ignoreSslErrors: true,
-              timeout: 30,
+              timeout: 120,
               url: 'https://' + env.CPIHost + '/api/v1/DeployIntegrationDesigntimeArtifact?Id=\'' + env.IntegrationFlowID + '\'&Version=\'active\'';
 
             Integer counter = 0;
@@ -140,7 +140,7 @@ pipeline {
                 ],
                 httpMode: 'GET',
                 responseHandle: 'LEAVE_OPEN',
-                timeout: 30,
+                timeout: 120,
                 url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')';
               def jsonObj = readJSON text: statusResp.content;
               deploymentStatus = jsonObj.d.Status;
@@ -154,7 +154,7 @@ pipeline {
                   ],
                   httpMode: 'GET',
                   responseHandle: 'LEAVE_OPEN',
-                  timeout: 30,
+                  timeout: 120,
                   url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')' + '/ErrorInformation/$value';
                 def jsonErrObj = readJSON text: deploymentErrorResp.content
                 def deployErrorInfo = jsonErrObj.parameter;
