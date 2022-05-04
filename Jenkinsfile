@@ -3,17 +3,17 @@ pipeline {
 
   //Configure the following environment variables before executing the Jenkins Job
   environment {
-    IntegrationFlowID = "IntegrationFlow1"
+    IntegrationFlowID = "Kafka_Producer_and_Consumer"
     FailJobOnFailedMPL = true //if you are expecting your message to fail, set this to false, so that your job won't fail
-    DeploymentCheckRetryCounter = 20 //multiply by 3 to get the maximum deployment time
-    MPLCheckRetryCounter = 10 //multiply by 3 to get the maximum processing time. Example: 10 would be sufficient for message processings <30s
+    DeploymentCheckRetryCounter = 50 //multiply by 3 to get the maximum deployment time
+    MPLCheckRetryCounter = 20 //multiply by 3 to get the maximum processing time. Example: 10 would be sufficient for message processings <30s
     CPIHost = "${env.CPI_HOST}"
     CPIOAuthHost = "${env.CPI_OAUTH_HOST}"
     CPIOAuthCredentials = "${env.CPI_OAUTH_CRED}"
     GITCredentials = "${env.GIT_CRED}"
     GITRepositoryURL = "${env.GIT_REPOSITORY_URL}"
     GITBranch = "${env.GIT_BRANCH_NAME}"
-    GITFolder = "IntegrationContent/IntegrationArtefacts"
+    GITFolder = "IntegrationArtefacts"
     GITComment = "Integration Artefacts update from CICD pipeline"
   }
 
