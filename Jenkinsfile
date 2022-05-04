@@ -12,7 +12,7 @@ pipeline {
     GITRepositoryURL = "${env.GIT_REPOSITORY_URL}"
     GITCredentials = "${env.GIT_CRED}"
     GITBranch = "${env.GIT_BRANCH_NAME}"
-    GITFolder = "IntegrationContent/IntegrationArtefacts"
+    GITFolder = "IntegrationArtefacts"
   }
 
   stages {
