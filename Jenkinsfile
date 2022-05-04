@@ -1,76 +1,83 @@
+   
 pipeline {
   agent any
 
   //Configure the following environment variables before executing the Jenkins Job
   environment {
     IntegrationFlowID = "Kafka_Producer_and_Consumer"
-    GetEndpoint = false //If you don't need the endpoint or the artefact does not provide an endpoint, set the value to false
-    DeploymentCheckRetryCounter = 40 //multiply by 3 to get the maximum deployment time
-	  CPIHost = "${env.CPI_HOST}"
-	  CPIOAuthHost = "${env.CPI_OAUTH_HOST}"
-	  CPIOAuthCredentials = "${env.CPI_OAUTH_CRED}"	
+    FailJobOnFailedMPL = true //if you are expecting your message to fail, set this to false, so that your job won't fail
+    DeploymentCheckRetryCounter = 50 //multiply by 3 to get the maximum deployment time
+    MPLCheckRetryCounter = 20 //multiply by 3 to get the maximum processing time. Example: 10 would be sufficient for message processings <30s
+    CPIHost = "${env.CPI_HOST}"
+    CPIOAuthHost = "${env.CPI_OAUTH_HOST}"
+    CPIOAuthCredentials = "${env.CPI_OAUTH_CRED}"
   }
 
   stages {
     stage('Generate oauth bearer token') {
       steps {
         script {
-          //get oauth token for Cloud Integration
-          println("requesting oauth token");
-          def getTokenResp = httpRequest acceptType: 'APPLICATION_JSON',
-            authentication: "${env.CPIOAuthCredentials}",
-            contentType: 'APPLICATION_JSON',
-            httpMode: 'POST',
-            responseHandle: 'LEAVE_OPEN',
-            timeout: 30,
-            url: 'https://' + env.CPIOAuthHost + '/oauth/token?grant_type=client_credentials';
-          def jsonObjToken = readJSON text: getTokenResp.content
-          def token = "Bearer " + jsonObjToken.access_token
-          env.token = token
-          getTokenResp.close();
-	  println token
+          //Get Oauth token
+          try {
+            def getTokenResp = httpRequest acceptType: 'APPLICATION_JSON',
+              authentication: env.CPIOAuthCredentials,
+              contentType: 'APPLICATION_JSON',
+              httpMode: 'POST',
+              responseHandle: 'LEAVE_OPEN',
+              timeout: 30,
+              url: 'https://' + env.CPIOAuthHost + '/oauth/token?grant_type=client_credentials';
+            def jsonObjToken = readJSON text: getTokenResp.content
+            def token = "Bearer " + jsonObjToken.access_token
+            env.token = token
+            getTokenResp.close();
+          } catch (Exception e) {
+            error("Oauth token generation failed:\n${e}")
+          }
         }
       }
     }
 
-    stage('Deploy integration flow and check for deployment success') {
+    stage('Deploy Iflow and check for deployment success else fail the job') {
       steps {
         script {
-          //deploy integration flow as specified in the configuration
-          println("Deploying integration flow.");
-          def deployResp = httpRequest httpMode: 'POST',
-            customHeaders: [
-              [maskValue: false, name: 'Authorization', value: env.token]
-            ],
-            ignoreSslErrors: true,
-            timeout: 30,
-            url: 'https://' + "${env.CPIHost}" + '/api/v1/DeployIntegrationDesigntimeArtifact?Id=\'' + "${env.IntegrationFlowID}" + '\'&Version=\'active\'';
-
+          //Deploy integration artefact
+          println("Deploying integration flow");
+          try {
+            def deployResp = httpRequest httpMode: 'POST',
+              customHeaders: [
+                [maskValue: false, name: 'Authorization', value: env.token]
+              ],
+              ignoreSslErrors: true,
+              timeout: 30,
+              url: 'https://' + env.CPIHost + '/api/v1/DeployIntegrationDesigntimeArtifact?Id=\'' + env.IntegrationFlowID + '\'&Version=\'active\'';
+          } catch (Exception e) {
+            error("Deploying the integration flow failed:\n${e}")
+          }
           //check deployment status
-          println("Start checking integration flow deployment status.");
+          println("Start checking integration flow status.");
           Integer counter = 0;
           def deploymentStatus;
-          def continueLoop = true;
-		  
-		      //check until max check counter reached or we have a final state
+          def continueLoop = true
+		      //turning loops until we get a final status
           while (counter < env.DeploymentCheckRetryCounter.toInteger() & continueLoop == true) {
             Thread.sleep(3000);
             counter = counter + 1;
-            def statusResp = httpRequest acceptType: 'APPLICATION_JSON',
+            def checkDeploymentResp = httpRequest acceptType: 'APPLICATION_JSON',
               customHeaders: [
                 [maskValue: false, name: 'Authorization', value: env.token]
               ],
               httpMode: 'GET',
               responseHandle: 'LEAVE_OPEN',
               timeout: 30,
-              url: 'https://' + "${env.CPIHost}" + '/api/v1/IntegrationRuntimeArtifacts(\'' + "${env.IntegrationFlowID}" + '\')';
-            def jsonObj = readJSON text: statusResp.content;
+              url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')';
+
+            def jsonObj = readJSON text: checkDeploymentResp.content;
             deploymentStatus = jsonObj.d.Status;
 
             println("Deployment status: " + deploymentStatus);
 			
             if (deploymentStatus.equalsIgnoreCase("Error")) {
-              //in case of error, get the error details
+              //In case of error, get the error details
               def deploymentErrorResp = httpRequest acceptType: 'APPLICATION_JSON',
                 customHeaders: [
                   [maskValue: false, name: 'Authorization', value: env.token]
@@ -78,50 +85,92 @@ pipeline {
                 httpMode: 'GET',
                 responseHandle: 'LEAVE_OPEN',
                 timeout: 30,
-                url: 'https://' + "${env.CPIHost}" + '/api/v1/IntegrationRuntimeArtifacts(\'' + "${env.IntegrationFlowID}" + '\')' + '/ErrorInformation/$value';
+                url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')' + '/ErrorInformation/$value';
               def jsonErrObj = readJSON text: deploymentErrorResp.content
-              def deployErrorInfo = jsonErrObj.parameter;
-              println("Error Details: " + deployErrorInfo);
-              statusResp.close();
+              def deployErrorInfo = jsonErrObj.parameter
+              checkDeploymentResp.close();
               deploymentErrorResp.close();
-              //End the whole job
-              sh 'exit 1';
+              error("Error Details: " + deployErrorInfo);
             } else if (deploymentStatus.equalsIgnoreCase("Started")) {
-			        //Final status reached 
               println("Integration flow deployment successful")
-              statusResp.close();
+              checkDeploymentResp.close();
               continueLoop = false
             } else {
-			        //Continue checking 
               println("The integration flow is not yet started. Will wait 3s and then check again.")
             }
           }
-		      //After exiting the loop, react to the deployment state
           if (!deploymentStatus.equalsIgnoreCase("Started")) {
-		        //If status not is Started, end the pipeline.
-            println("No final deployment status reached. Current status: \'" + deploymentStatus);
-            sh 'exit 1';
-          } else {
-            if (env.GetEndpoint.equalsIgnoreCase("true")) {
-              //Get endpoint as configured above
-              def endpointResp = httpRequest acceptType: 'APPLICATION_JSON',
+            error("No final deployment status reached. Current status: \'" + deploymentStatus);
+          }
+        }
+      }
+    }
+    stage('Check Message processing status and fail if not completed') {
+      steps {
+        script {
+          println("Checking message processing log status");
+          Thread.sleep(3000);
+          Integer counter = 0;
+          def mPLStatus = '';
+          def continueLoop = true
+          def mplId = '';
+          while (counter < env.MPLCheckRetryCounter.toInteger() & continueLoop == true) {
+            //get the latest MPL (excluding those in status Discarded
+            try {
+              def checkMPLResp = httpRequest acceptType: 'APPLICATION_JSON',
                 customHeaders: [
                   [maskValue: false, name: 'Authorization', value: env.token]
                 ],
                 httpMode: 'GET',
                 responseHandle: 'LEAVE_OPEN',
                 timeout: 30,
-                url: 'https://' + "${env.CPIHost}" + '/api/v1/ServiceEndpoints?$filter=Name%20eq%20\'' + "${env.IntegrationFlowID}" + '\'&$select=EntryPoints&$format=json&$expand=EntryPoints'
-              def jsonEndpointObj = readJSON text: endpointResp.content;
-              def endpoint = jsonEndpointObj.d.results.EntryPoints.results.Url;
-              def size = (jsonEndpointObj.d.results.EntryPoints.results).size();
-              endpointResp.close();
-			        //check if the flow has an endpoint
-              if (size != 0) {
-                println("Endpoint: " + endpoint);
-              } else {
-                unstable("The specified integration flow does not have an endpoint. Please check the flow or tenant")
+                url: 'https://' + env.CPIHost + '/api/v1/MessageProcessingLogs?$filter=IntegrationArtifact/Id%20eq%20\'' + env.IntegrationFlowID + '\'and%20Status%20ne%20\'DISCARDED\'&$orderby=LogEnd+desc&$top=1';
+           
+              //extract MPL Status
+              def jsonMPLStatus = readJSON text: checkMPLResp.content
+              jsonMPLStatus.d.results.each {
+                value ->
+                  mplStatus = value.Status;
+                mplId = value.MessageGuid;
+                //if status processing, keep going
+                if (mplStatus.equalsIgnoreCase("Processing")) {
+                  println("message processing not over yet, trying again in a short moment");
+                  Thread.sleep(3000);
+                  counter = counter + 1;
+                } else {
+                  //we got a final state, ending the loop
+                  continueLoop = false;
+                  checkMPLResp.close();
+                }
               }
+              println("Final message status of MPL ID \'" + mplId + "\' : \'" + mplStatus + "\'");
+              if (mplStatus.equalsIgnoreCase("Processing")) {
+                error("The message processing did not finish within the check frame. If it is a long running flow, increase the retry counter in the job configuration.");
+              } else if (mplStatus.equalsIgnoreCase("Failed") || mplStatus.equalsIgnoreCase("Retry")) {
+                //get error information
+                def cpiMplError = httpRequest acceptType: 'APPLICATION_ZIP',
+                  contentType: 'APPLICATION_ZIP',
+                  customHeaders: [
+                    [maskValue: false, name: 'Authorization', value: env.token]
+                  ],
+                  ignoreSslErrors: false,
+                  responseHandle: 'LEAVE_OPEN',
+                  timeout: 30,
+                  url: 'https://' + env.CPIHost + '/api/v1/MessageProcessingLogs(\'' + mplId + '\')/ErrorInformation/$value';
+                println("Message processing failed! Error information: " + cpiMplError.content);
+                cpiMplError.close();
+				        if (env.FailJobOnFailedMPL.equalsIgnoreCase("true")) {
+                  error("The job is configured to fail on a failed MPL. Stopping now.");
+                }
+              } else if (mplStatus.equalsIgnoreCase("Abandoned")) {
+                error("Message processing not successful. It seems as the processing was interrupted.");
+              } else if (mplStatus.equalsIgnoreCase("Completed")) {
+                println("Message processing successful");
+              } else {
+                error("Kindly check the tenant, something went wrong");
+              }
+            } catch (Exception e) {
+              error("Determination of message processing log status failed:\n${e}")
             }
           }
         }
