@@ -5,7 +5,7 @@ pipeline {
   environment {
     IntegrationFlowID = "Kafka_Producer_and_Consumer"
     GetEndpoint = false //If you don't need the endpoint or the artefact does not provide an endpoint, set the value to false
-    DeploymentCheckRetryCounter = 20 //multiply by 3 to get the maximum deployment time
+    DeploymentCheckRetryCounter = 40 //multiply by 3 to get the maximum deployment time
 	  CPIHost = "${env.CPI_HOST}"
 	  CPIOAuthHost = "${env.CPI_OAUTH_HOST}"
 	  CPIOAuthCredentials = "${env.CPI_OAUTH_CRED}"	
