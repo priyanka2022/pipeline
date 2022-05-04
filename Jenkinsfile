@@ -3,26 +3,26 @@ pipeline {
 
   //Configure the following environment variables before executing the Jenkins Job
   environment {
-    IntegrationFlowID = "Kafka_Producer_and_Consumer"
-    FailJobOnFailedMPL = true //if you are expecting your message to fail, set this to false, so that your job won't fail
-    DeploymentCheckRetryCounter = 50 //multiply by 3 to get the maximum deployment time
-    MPLCheckRetryCounter = 20 //multiply by 3 to get the maximum processing time. Example: 10 would be sufficient for message processings <30s
+    IntegrationFlowID = "Kafka_Producer_and_Consumer" 
+    DeployFlow = true //if the flow should only be uploaded, set this to false
+    DeploymentCheckRetryCounter = 20 //multiply by 3 to get the maximum deployment time
     CPIHost = "${env.CPI_HOST}"
     CPIOAuthHost = "${env.CPI_OAUTH_HOST}"
     CPIOAuthCredentials = "${env.CPI_OAUTH_CRED}"
-    GITCredentials = "${env.GIT_CRED}"
     GITRepositoryURL = "${env.GIT_REPOSITORY_URL}"
+    GITCredentials = "${env.GIT_CRED}"
     GITBranch = "${env.GIT_BRANCH_NAME}"
-    GITFolder = "IntegrationArtefacts"
-    GITComment = "Integration Artefacts update from CICD pipeline"
+    GITFolder = "IntegrationContent/IntegrationArtefacts"
   }
 
   stages {
-    stage('deploy Iflow and check MPL Status and Submit to GIT if MPL Status Completed') {
+    stage('Get Iflow Artifact from Git, upload to CPI Designtime and optionally Deploy') {
       steps {
+		    //empty the workspace
         deleteDir()
+		
         script {
-          //clone repo 
+		      //checkout the folder from Git
           checkout([
             $class: 'GitSCM',
             branches: [[name: env.GITBranch]],
@@ -42,7 +42,14 @@ pipeline {
             ]
           ])
 
+		      //zip the flow content 
+          def folder = env.GITFolder + '/' + env.IntegrationFlowID + '/';
+          def filePath = env.IntegrationFlowID + ".zip";
+
+          zip dir: folder, glob: '', zipFile: filePath;
+
           //get token
+		      println("Requesting token from Cloud Integration tenant");
           def getTokenResp = httpRequest acceptType: 'APPLICATION_JSON',
             authentication: env.CPIOAuthCredentials,
             contentType: 'APPLICATION_JSON',
@@ -53,171 +60,120 @@ pipeline {
           def jsonObjToken = readJSON text: getTokenResp.content
           def token = "Bearer " + jsonObjToken.access_token
 
-          //deploy integration flow
-          println("Deploy integration flow");
-
-          def deployResp = httpRequest httpMode: 'POST',
+          //check if the flow already exists on the tenant
+          def checkResp = httpRequest acceptType: 'APPLICATION_JSON',
             customHeaders: [
               [maskValue: false, name: 'Authorization', value: token]
             ],
-            ignoreSslErrors: false,
+            httpMode: 'GET',
+            responseHandle: 'LEAVE_OPEN',
+            validResponseCodes: '200,201,202,404',
             timeout: 30,
-            url: 'https://' + env.CPIHost + '/api/v1/DeployIntegrationDesigntimeArtifact?Id=\'' + env.IntegrationFlowID + '\'&Version=\'active\'';
+            url: 'https://' + env.CPIHost + '/api/v1/IntegrationDesigntimeArtifacts(Id=\'' + env.IntegrationFlowID + '\',Version=\'active\')';
 
-          //check if the flow was deployed 
-          Integer counter = 0;
-          def deploymentStatus;
-          def continueLoop = true;
-          println("Start checking integration artefact status.");
-          while (counter < env.DeploymentCheckRetryCounter.toInteger() & continueLoop == true) {
-            Thread.sleep(3000);
-            counter = counter + 1;
-            def statusResp = httpRequest acceptType: 'APPLICATION_JSON',
+          def filecontent = readFile encoding: 'Base64', file: filePath;
+          if (checkResp.status == 404) {
+            //Upload integration flow via POST
+			      println("Flow does not yet exist on configured tenant.");
+            //prepare upload payload
+            def postPayload = '{ \"Name\": \"flowName\", \"Id": "flowId\", \"PackageId\": \"packageId\", \"ArtifactContent\":\"flowContent\"}';
+
+            postPayload = postPayload.replace('flowName', env.IntegrationFlowID);
+            postPayload = postPayload.replace('flowId', env.IntegrationFlowID);
+            postPayload = postPayload.replace('packageId', env.IntegrationPackage);
+            postPayload = postPayload.replace('flowContent', filecontent);
+
+            //upload
+			      println("Uploading flow.");
+            def postResp = httpRequest acceptType: 'APPLICATION_JSON',
+              contentType: 'APPLICATION_JSON',
               customHeaders: [
                 [maskValue: false, name: 'Authorization', value: token]
               ],
-              httpMode: 'GET',
-              responseHandle: 'LEAVE_OPEN',
+              httpMode: 'POST',
+              requestBody: postPayload,
+              url: 'https://' + env.CPIHost + '/api/v1/IntegrationDesigntimeArtifacts'
+          } else {
+            //Overwrite integration flow via PUT
+			      println("Flow already exists on configured tenant. Update will be performed.");
+            //prepare upload payload
+            def putPayload = '{ \"Name\": \"flowName\", \"ArtifactContent\": \"iflowContent\"}';
+            putPayload = putPayload.replace('flowName', env.IntegrationFlowID);
+            putPayload = putPayload.replace('iflowContent', filecontent);
+
+            //upload
+			      println("Uploading flow.");
+            def putResp = httpRequest acceptType: 'APPLICATION_JSON',
+              contentType: 'APPLICATION_JSON',
+              customHeaders: [
+                [maskValue: false, name: 'Authorization', value: token]
+              ],
+              httpMode: 'PUT',
+              requestBody: putPayload,
+              url: 'https://' + env.CPIHost + '/api/v1/IntegrationDesigntimeArtifacts(Id=\'' + env.IntegrationFlowID + '\',Version=\'active\')';
+          }
+          println("Upload successful");
+          checkResp.close();
+
+          if (env.DeployFlow.equalsIgnoreCase("true")) {
+            //deploy integration flow
+            println("Deploying integration flow");
+            def deployResp = httpRequest httpMode: 'POST',
+              customHeaders: [
+                [maskValue: false, name: 'Authorization', value: token]
+              ],
+              ignoreSslErrors: true,
               timeout: 30,
-              url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')';
+              url: 'https://' + env.CPIHost + '/api/v1/DeployIntegrationDesigntimeArtifact?Id=\'' + env.IntegrationFlowID + '\'&Version=\'active\'';
 
-            def jsonStatusObj = readJSON text: statusResp.content;
-            deploymentStatus = jsonStatusObj.d.Status;
-
-            println("Deployment status: " + deploymentStatus);
-            if (deploymentStatus.equalsIgnoreCase("Error")) {
-              //get error details
-              def deploymentErrorResp = httpRequest acceptType: 'APPLICATION_JSON',
+            Integer counter = 0;
+            def deploymentStatus;
+            def continueLoop = true;
+            println("Deployment successful triggered. Checking status.");
+			      //performing the loop until we get a final deployment status.
+            while (counter < env.DeploymentCheckRetryCounter.toInteger() & continueLoop == true) {
+              Thread.sleep(3000);
+              counter = counter + 1;
+              def statusResp = httpRequest acceptType: 'APPLICATION_JSON',
                 customHeaders: [
                   [maskValue: false, name: 'Authorization', value: token]
                 ],
                 httpMode: 'GET',
                 responseHandle: 'LEAVE_OPEN',
                 timeout: 30,
-                url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')' + '/ErrorInformation/$value';
-              def jsonErrObj = readJSON text: deploymentErrorResp.content
-              def deployErrorInfo = jsonErrObj.parameter;
-              println("Error Details: " + deployErrorInfo);
-              statusResp.close();
-              deploymentErrorResp.close();
-              //end job
-              currentBuild.result = 'FAILURE'
-              return
-            } else if (deploymentStatus.equalsIgnoreCase("Started")) {
-              println("Integration flow deployment successful")
-              statusResp.close();
-              continueLoop = false
-            } else {
-              println("The integration flow is not yet started. Will wait 3s and then check again.")
-            }
-          }
+                url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')';
+              def jsonObj = readJSON text: statusResp.content;
+              deploymentStatus = jsonObj.d.Status;
 
-          if (!deploymentStatus.equalsIgnoreCase("Started")) {
-            println("No final deployment status reached. Current status: \'" + deploymentStatus);
-            currentBuild.result = 'FAILURE'
-            return
-          }
-
-          //Get latest MPL status of the deployed integration flow
-          println("Checking message processing log status");
-          counter = 0;
-          def mplStatus = '';
-          continueLoop = true;
-          def mplId = '';
-
-          while (counter < env.MPLCheckRetryCounter.toInteger() & continueLoop == true) {
-            //get the latest MPL
-            def checkMPLResp = httpRequest acceptType: 'APPLICATION_JSON',
-              customHeaders: [
-                [maskValue: false, name: 'Authorization', value: token]
-              ],
-              contentType: 'APPLICATION_JSON',
-              ignoreSslErrors: false,
-              responseHandle: 'LEAVE_OPEN',
-              timeout: 30,
-              url: 'https://' + env.CPIHost + '/api/v1/MessageProcessingLogs?$filter=IntegrationArtifact/Id%20eq%20\'' + env.IntegrationFlowID + '\'and%20Status%20ne%20\'DISCARDED\'&$orderby=LogEnd+desc&$top=1';
-
-            def jsonMPLStatus = readJSON text: checkMPLResp.content
-            jsonMPLStatus.d.results.each {
-              value ->
-                mplStatus = value.Status;
-              mplId = value.MessageGuid;
-              //if status processing, keep going
-              if (mplStatus.equalsIgnoreCase("Processing")) {
-                println("message processing not over yet, trying again in a short moment");
-                Thread.sleep(3000);
-                counter = counter + 1;
-              }
-            else {
-                //we got a final state, ending the loop
-                continueLoop = false;
-                checkMPLResp.close();
+              println("Deployment status: " + deploymentStatus);
+              if (deploymentStatus.equalsIgnoreCase("Error")) {
+                //get error details
+                def deploymentErrorResp = httpRequest acceptType: 'APPLICATION_JSON',
+                  customHeaders: [
+                    [maskValue: false, name: 'Authorization', value: token]
+                  ],
+                  httpMode: 'GET',
+                  responseHandle: 'LEAVE_OPEN',
+                  timeout: 30,
+                  url: 'https://' + env.CPIHost + '/api/v1/IntegrationRuntimeArtifacts(\'' + env.IntegrationFlowID + '\')' + '/ErrorInformation/$value';
+                def jsonErrObj = readJSON text: deploymentErrorResp.content
+                def deployErrorInfo = jsonErrObj.parameter;
+                println("Error Details: " + deployErrorInfo);
+                statusResp.close();
+                deploymentErrorResp.close();
+				        error("Integration flow not deployed successfully. Ending job now.");
+              } else if (deploymentStatus.equalsIgnoreCase("Started")) {
+                println("Integration flow deployment was successful")
+                statusResp.close();
+                continueLoop = false
+              } else {
+                println("The integration flow is not yet started. Will wait 3s and then check again.")
               }
             }
+            if (!deploymentStatus.equalsIgnoreCase("Started")) {
+              error("No final deployment status could be reached. Kindly check the tenant for any issue.");
+            }
           }
-          println("message status of MPL ID \'" + mplId + "\' : \'" + mplStatus + "\'");
-          if (mplStatus.equalsIgnoreCase("Processing")) {
-            error("The message processing did not finish within the check frame. If it is a long running flow, increase the retry counter in the job configuration.");
-          } else if (mplStatus.equalsIgnoreCase("Failed") || mplStatus.equalsIgnoreCase("Retry")) {
-            //get error information
-            def cpiMplError = httpRequest acceptType: 'APPLICATION_ZIP',
-              customHeaders: [
-                [maskValue: false, name: 'Authorization', value: token]
-              ],
-              ignoreSslErrors: false,
-              responseHandle: 'LEAVE_OPEN',
-              timeout: 30,
-              url: 'https://' + env.CPIHost + '/api/v1/MessageProcessingLogs(\'' + mplId + '\')/ErrorInformation/$value';
-            println("Message processing failed! Error information: " + cpiMplError.content);
-            cpiMplError.close();
-			if (env.FailJobOnFailedMPL.equalsIgnoreCase("true")) {
-              error("The job is configured to fail on a failed MPL processing.");
-            }
-          } else if (mplStatus.equalsIgnoreCase("Discarded") || mplStatus.equalsIgnoreCase("Abandoned")) {
-            error("Message processing not successful. Either a different message is blocking the processing or the processing was interrupted");
-          } else if (mplStatus.equalsIgnoreCase("Completed")) {
-            println("Message processing successful.");
-		  } else {
-              error("Unexpected error. Kindly check the tenant.");
-            }
-		  
-            //Proceed with the download. Delete the old flow content first so that only the latest content gets stored
-            dir(env.GITFolder + '/' + env.FlowId) {
-              deleteDir();
-            }
-            //download and extract artefact from tenant
-            println("Downloading artefact");
-            def tempfile = UUID.randomUUID().toString() + ".zip";
-            def cpiDownloadResponse = httpRequest acceptType: 'APPLICATION_ZIP',
-              customHeaders: [
-                [maskValue: false, name: 'Authorization', value: token]
-              ],
-              ignoreSslErrors: false,
-              responseHandle: 'LEAVE_OPEN',
-              timeout: 30,
-              outputFile: tempfile,
-              url: 'https://' + env.CPIHost + '/api/v1/IntegrationDesigntimeArtifacts(Id=\'' + env.IntegrationFlowID + '\',Version=\'active\')/$value';
-            def disposition = cpiDownloadResponse.headers.toString();
-            def index = disposition.indexOf('filename') + 9;
-            def lastindex = disposition.indexOf('.zip', index);
-            def filename = disposition.substring(index + 1, lastindex + 4);
-            def folder = env.GITFolder + '/' + filename.substring(0, filename.indexOf('.zip'));
-            fileOperations([fileUnZipOperation(filePath: tempfile, targetLocation: folder)])
-            cpiDownloadResponse.close();
-
-            //remove the zip
-            fileOperations([fileDeleteOperation(excludes: '', includes: tempfile)])
-
-            dir(folder) {
-              sh 'git add .'
-            }
-            println("Store integration artefact in Git")
-            withCredentials([
-              [$class: 'UsernamePasswordMultiBinding', credentialsId: env.GITCredentials, usernameVariable: 'GitUserName', passwordVariable: 'GitPassword']
-            ]) {
-              sh 'git diff-index --quiet HEAD || git commit -am ' + '\'' + env.GITComment + '\''
-                 sh('git push https://${GitUserName}:${GitPassword}@' + env.GITRepositoryURL  + ' HEAD:' + env.GITBranch)
-            }
         }
       }
     }
